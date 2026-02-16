@@ -18,5 +18,5 @@ CPI tracks price changes in common categories like:
 Lets take an example of a basket
 ![CPI Formula](images/cpiformula.png)
 
-If CPI increases → Inflation
-If CPI decreases → Deflation
+- If CPI increases → Inflation
+- If CPI decreases → Deflation
