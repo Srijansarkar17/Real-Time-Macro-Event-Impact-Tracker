@@ -20,3 +20,7 @@ Lets take an example of a basket
 
 - If CPI increases → Inflation
 - If CPI decreases → Deflation
+
+## Explaination of FetchMarketData() in market/fetch.go
+
+- Fetches market data, For multiple assets, At the same time (concurrently), And waits until all are done
