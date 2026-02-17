@@ -18,9 +18,14 @@ func init() {
 func main() {
 	fmt.Println("Macro Event Starting")
 
-	err := macro.FetchSampleCPI()
+	data, err := macro.FetchCPIObservations()
 	if err != nil {
-		fmt.Println("Error: ", err)
+		panic(err)
+	}
+	fmt.Println("Number of CPI Observations:", len(data.Observations))
+
+	for i := 0; i < 5 && i < len(data.Observations); i++ {
+		fmt.Println(data.Observations[i])
 	}
 
 	market.FetchMarketData()
