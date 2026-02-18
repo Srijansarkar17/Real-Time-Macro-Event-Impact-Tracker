@@ -1,5 +1,6 @@
 package macro
 
+// Fred SERIES DATA GIVES US The historical inflation values.
 import (
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ type FredSeriesResponse struct {
 	//}
 }
 
+// fetch CPI series data
 func FetchCPIObservations() (*FredSeriesResponse, error) { //*FredSeriesResponse → pointer to CPI data, error → in case something goes wrong
 	apiKey := os.Getenv("FRED_API_KEY")
 

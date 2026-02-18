@@ -27,3 +27,7 @@ Lets take an example of a basket
 ## Explaination of FetchMarketData() in market/fetch.go
 
 - Fetches market data, For multiple assets, At the same time (concurrently), And waits until all are done
+
+## Difference between FredSeries data and FredReleaseDate data?
+- FredSeries = Economic Time Series Data(The historical inflation values.)
+- FredRelease = These are the days when CPI was released to the public.
