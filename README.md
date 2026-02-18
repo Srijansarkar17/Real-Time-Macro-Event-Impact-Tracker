@@ -1,5 +1,8 @@
 # Real-Time-Macro-Event-Impact-Tracker
 
+## Architecture
+![Architecture](images/architecture.png)
+
 ## Step1. Defining Assets to Track
 We track 4 asset classes:
 - Equities(SPY (S&P 500 ETF))
