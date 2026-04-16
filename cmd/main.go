@@ -15,18 +15,49 @@ func init() {
 		log.Fatal("Error loading .env file")
 	}
 }
+
 func main() {
-	fmt.Println("Macro Event Starting")
+	fmt.Println("=== Macro Event Impact Tracker ===")
+	fmt.Println()
 
-	data, err := macro.FetchCPIObservations()
+	// --- Step 1: Fetch CPI series data (historical values) ---
+	fmt.Println("[1/3] Fetching CPI observations from FRED...")
+	series, err := macro.FetchCPIObservations()
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to fetch CPI observations: %v", err)
 	}
-	fmt.Println("Number of CPI Observations:", len(data.Observations))
+	fmt.Printf("      → Got %d CPI observations\n", len(series.Observations))
 
-	for i := 0; i < 5 && i < len(data.Observations); i++ {
-		fmt.Println(data.Observations[i])
+	// --- Step 2: Fetch CPI release dates ---
+	fmt.Println("[2/3] Fetching CPI release dates from FRED...")
+	releases, err := macro.FetchCPIReleaseDates()
+	if err != nil {
+		log.Fatalf("Failed to fetch CPI release dates: %v", err)
+	}
+	fmt.Printf("      → Got %d release dates\n", len(releases.ReleaseDates))
+
+	// --- Step 3: Build MacroEvent structs ---
+	fmt.Println("[3/3] Building MacroEvent structs...")
+	events, err := macro.BuildMacroEvents(series, releases)
+	if err != nil {
+		log.Fatalf("Failed to build macro events: %v", err)
+	}
+	fmt.Printf("      → Built %d macro events\n\n", len(events))
+
+	// Print the last 10 events (most recent)
+	fmt.Println("--- Last 10 CPI Events ---")
+	start := len(events) - 10
+	if start < 0 {
+		start = 0
+	}
+	for _, e := range events[start:] {
+		fmt.Println(e)
 	}
 
+	fmt.Println()
+
+	// --- Market data (scaffold) ---
+	fmt.Println("--- Market Data Fetch (scaffold) ---")
 	market.FetchMarketData()
 }
+
