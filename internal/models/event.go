@@ -7,9 +7,8 @@ import (
 )
 
 type MacroEvent struct {
-	Name      string
-	TimeStamp time.Time
-	Actual    float64
-	Forecast  float64
-	Previous  float64
+	EventName   string
+	ReleaseDate time.Time
+	Actual      float64
+	Previous    float64
 }

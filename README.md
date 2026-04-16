@@ -1,5 +1,13 @@
 # Real-Time-Macro-Event-Impact-Tracker
 
+## What this Project is doing?
+This is a Go application that tracks how macroeconomic events (like CPI releases) impact financial markets in real time. The core idea:
+
+- Fetch macro data — Pull CPI (Consumer Price Index) observations & release dates from the FRED API (Federal Reserve Economic Data).
+- Fetch market data — Pull real-time/minute-level prices for assets like SPY, EURUSD, VIX.
+- Analyze impact — Around each CPI release, extract a time window of market prices, compute returns, and model how the "surprise" (actual vs. expected) drives price changes.
+- Output results — Generate statistical summaries and visualizations.
+
 ## Architecture
 ![Architecture](images/architecture.png)
 
