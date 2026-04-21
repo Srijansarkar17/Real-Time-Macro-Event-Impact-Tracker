@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"macro-impact-tracker/internal/analytics"
 	"macro-impact-tracker/internal/macro"
 	"macro-impact-tracker/internal/market"
 
@@ -25,7 +26,7 @@ func main() {
 	// =========================================================
 
 	// --- Step 1: Fetch CPI series data (historical values) ---
-	fmt.Println("[1/4] Fetching CPI observations from FRED...")
+	fmt.Println("[1/7] Fetching CPI observations from FRED...")
 	series, err := macro.FetchCPIObservations()
 	if err != nil {
 		log.Fatalf("Failed to fetch CPI observations: %v", err)
@@ -33,7 +34,7 @@ func main() {
 	fmt.Printf("      → Got %d CPI observations\n", len(series.Observations))
 
 	// --- Step 2: Fetch CPI release dates ---
-	fmt.Println("[2/4] Fetching CPI release dates from FRED...")
+	fmt.Println("[2/7] Fetching CPI release dates from FRED...")
 	releases, err := macro.FetchCPIReleaseDates()
 	if err != nil {
 		log.Fatalf("Failed to fetch CPI release dates: %v", err)
@@ -41,7 +42,7 @@ func main() {
 	fmt.Printf("      → Got %d release dates\n", len(releases.ReleaseDates))
 
 	// --- Step 3: Build MacroEvent structs ---
-	fmt.Println("[3/4] Building MacroEvent structs...")
+	fmt.Println("[3/7] Building MacroEvent structs...")
 	events, err := macro.BuildMacroEvents(series, releases)
 	if err != nil {
 		log.Fatalf("Failed to build macro events: %v", err)
@@ -64,7 +65,7 @@ func main() {
 	// PHASE 2: Fetch real market data around each CPI release
 	// =========================================================
 
-	fmt.Println("[4/4] Fetching market data around CPI releases...")
+	fmt.Println("[4/7] Fetching market data around CPI releases...")
 	fmt.Println()
 
 	// Fetch market data for the last 3 events only (to stay within
@@ -135,6 +136,69 @@ func main() {
 		}
 	}
 
+	// =========================================================
+	// PHASE 3: Analytics Engine
+	// =========================================================
+
 	fmt.Println()
+	fmt.Println("═══════════════════════════════════════════════════════")
+	fmt.Println("           PHASE 3: ANALYTICS ENGINE")
+	fmt.Println("═══════════════════════════════════════════════════════")
+	fmt.Println()
+
+	// --- Step 5: Extract Event Windows ---
+	fmt.Println("[5/7] Extracting event windows...")
+	windows := analytics.DefaultWindows()
+	eventWindows := analytics.ExtractEventWindows(events, store, windows)
+	fmt.Printf("      → Extracted %d event windows\n", len(eventWindows))
+
+	if len(eventWindows) == 0 {
+		fmt.Println("      ⚠ No event windows could be extracted (no market data?)")
+		fmt.Println()
+		fmt.Println("=== Done ===")
+		return
+	}
+
+	// --- Step 6: Compute Returns ---
+	fmt.Println("[6/7] Computing return matrix...")
+	matrix := analytics.ComputeReturns(eventWindows)
+	fmt.Printf("      → Computed %d returns across %d assets × %d windows\n",
+		len(matrix.Returns), len(matrix.Assets), len(matrix.Windows))
+	fmt.Println()
+	fmt.Println(matrix.Summary())
+
+	// --- Step 7a: Surprise Sensitivity Model ---
+	fmt.Println("[7/7] Running analytics...")
+	fmt.Println()
+
+	sensitivity := analytics.ComputeSensitivity(matrix)
+	if len(sensitivity) > 0 {
+		fmt.Println(analytics.SensitivitySummary(sensitivity))
+	} else {
+		fmt.Println("Sensitivity Analysis: insufficient data (need ≥3 events per asset/window)")
+		fmt.Println("  → Increase maxEvents or collect more CPI releases")
+		fmt.Println()
+	}
+
+	// --- Step 7b: Cross-Asset Lead/Lag Analysis ---
+	// Only use intraday assets for lead/lag (daily assets don't have minute-level data)
+	intradayAssets := []string{}
+	for _, sym := range store.Symbols() {
+		ts := store.Get(sym)
+		if ts != nil && ts.Interval == "1min" {
+			intradayAssets = append(intradayAssets, sym)
+		}
+	}
+
+	if len(intradayAssets) >= 2 {
+		leadlag := analytics.ComputeAllLeadLag(store, events, intradayAssets, 5)
+		if len(leadlag) > 0 {
+			fmt.Println(analytics.LeadLagSummary(leadlag))
+		}
+	} else {
+		fmt.Println("Lead/Lag Analysis: need ≥2 intraday assets for cross-correlation")
+		fmt.Println()
+	}
+
 	fmt.Println("=== Done ===")
 }

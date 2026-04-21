@@ -10,7 +10,7 @@ This is a **Go application** that tracks how **macroeconomic events** (like CPI 
 4. **Output results** — Generate statistical summaries and visualizations.
 
 > [!NOTE]
-> **Phase 1** (Macro Layer) and **Phase 2** (Market Data Integration) are complete. The analytics engine and output layer are next.
+> **Phase 1** (Macro Layer), **Phase 2** (Market Data Integration), and **Phase 3** (Analytics Engine) are complete. The output layer is next.
 
 ---
 
@@ -24,7 +24,7 @@ The system is designed as **four layers**:
 |---|---|---|
 | **MacroLayer** | Fetch CPI observations & release dates from FRED, build `MacroEvent` structs | ✅ Done |
 | **MarketLayer** | Fetch minute-level asset prices from Twelve Data & FRED, store as time-series | ✅ Done |
-| **AnalyticsEngine** | Event window extraction, return computation, surprise sensitivity model, cross-asset lead/lag analysis | 🔴 Minimal |
+| **AnalyticsEngine** | Event window extraction, return computation, surprise sensitivity model, cross-asset lead/lag analysis | ✅ Done |
 | **OutputLayer** | Statistical summary + visualization/dashboard | 🔴 Not started |
 
 ---
@@ -35,19 +35,23 @@ The system is designed as **four layers**:
 
 #### [main.go](file:///Users/srijansarkar/Documents/MacroEventImpactTracker/cmd/main.go)
 
-The application entry point. Runs the full pipeline:
+The application entry point. Runs the full pipeline across all three phases:
 - Loads environment variables from `configs/.env` (FRED + Twelve Data API keys) via `godotenv`
 - **Phase 1**: Fetches CPI observations → release dates → builds `MacroEvent` structs
 - **Phase 2**: Fetches market data for all assets around the last 3 CPI events, prints summary with SPY candles, Treasury yields, and DXY proxy
+- **Phase 3**: Extracts event windows → computes return matrix → runs sensitivity analysis → runs lead/lag analysis
 
 ```mermaid
 flowchart LR
     A[main.go] --> B[Load .env]
-    B --> C["[1/4] FetchCPIObservations"]
-    B --> D["[2/4] FetchCPIReleaseDates"]
-    C --> E["[3/4] BuildMacroEvents"]
-    E --> F["[4/4] FetchMarketDataForEvents"]
+    B --> C["[1/7] FetchCPIObservations"]
+    B --> D["[2/7] FetchCPIReleaseDates"]
+    C --> E["[3/7] BuildMacroEvents"]
+    E --> F["[4/7] FetchMarketDataForEvents"]
     F --> G[Print Summary: SPY, Yields, DXY]
+    G --> H["[5/7] ExtractEventWindows"]
+    H --> I["[6/7] ComputeReturns"]
+    I --> J["[7/7] Sensitivity + Lead/Lag"]
 ```
 
 ---
@@ -321,7 +325,7 @@ The High/Low swap is because when you invert a fraction, the minimum becomes the
 
 ---
 
-### 5. Analytics Layer (`internal/analytics/`)
+### 5. Analytics Layer (`internal/analytics/`) — Phase 3
 
 #### [window.go](file:///Users/srijansarkar/Documents/MacroEventImpactTracker/internal/analytics/window.go)
 
@@ -331,7 +335,155 @@ The High/Low swap is because when you invert a fraction, the minimum becomes the
 ```
 return = (after - before) / before
 ```
-This will be used to compute how much each asset moved around a CPI release.
+
+---
+
+#### [eventwindow.go](file:///Users/srijansarkar/Documents/MacroEventImpactTracker/internal/analytics/eventwindow.go) `[NEW in Phase 3]`
+
+**Purpose**: Slices the market time-series into standardized analysis windows around each CPI release.
+
+##### Key Types
+
+**`WindowDef`** — Defines a named time window relative to an event:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `Name` | `string` | Human-readable identifier: `"pre_30m"`, `"post_30m"`, etc. |
+| `Offset` | `time.Duration` | When the window starts relative to event time |
+| `End` | `time.Duration` | When the window ends relative to event time |
+
+**`EventWindow`** — One extracted data slice for [event × asset × window]:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `EventIndex` | `int` | Which event this belongs to |
+| `Event` | `MacroEvent` | The CPI release event |
+| `Asset` | `string` | e.g. `"SPY"`, `"DGS10"` |
+| `Window` | `WindowDef` | Which window definition |
+| `Data` | `*AssetTimeSeries` | The sliced time-series |
+| `OpenPrice` | `float64` | First candle's close ("before" price) |
+| `ClosePrice` | `float64` | Last candle's close ("after" price) |
+
+##### `DefaultWindows()` — The Four Analysis Windows
+
+| Name | Start | End | Purpose |
+|---|---|---|---|
+| `pre_30m` | -30min | 0 | Pre-event positioning |
+| `post_30m` | 0 | +30min | Immediate market reaction |
+| `post_2h` | 0 | +2h | First stabilization period |
+| `post_1d` | 0 | +1d | Full-day impact |
+
+##### `ExtractEventWindows(events, store, windows)` → `[]EventWindow`
+
+Iterates over every combination of [event × asset × window], slices the market data store, and extracts open/close prices. Windows with no data (e.g., intraday windows for daily-only assets like DGS10) are gracefully skipped.
+
+---
+
+#### [returns.go](file:///Users/srijansarkar/Documents/MacroEventImpactTracker/internal/analytics/returns.go) `[NEW in Phase 3]`
+
+**Purpose**: Computes percentage returns across all event windows and builds the 3D return matrix.
+
+##### Key Types
+
+**`AssetReturn`** — A single cell in the return matrix:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `EventIndex` | `int` | Which event |
+| `EventDate` | `string` | Human-readable date |
+| `Asset` | `string` | Asset symbol |
+| `Window` | `string` | Window name |
+| `Return` | `float64` | Percentage return (0.005 = 0.5%) |
+| `Surprise` | `float64` | The event's surprise value |
+
+**`ReturnMatrix`** — The complete 3D return matrix:
+
+```go
+type ReturnMatrix struct {
+    Returns []AssetReturn // All computed returns  
+    Assets  []string      // Unique asset symbols (sorted)
+    Windows []string      // Unique window names (ordered)
+}
+```
+
+##### Key Functions
+
+- `ComputeReturns(eventWindows)` → Computes `(close - open) / open` for every event window, builds the matrix
+- `GetReturns(asset, window)` → Filters returns by asset/window (empty string = match all)
+- `GetReturnsByAssetWindow(asset, window)` → Sorted by event index, used as regression input
+- `Summary()` → Produces a formatted table grouped by window, with assets as columns
+
+---
+
+#### [sensitivity.go](file:///Users/srijansarkar/Documents/MacroEventImpactTracker/internal/analytics/sensitivity.go) `[NEW in Phase 3]`
+
+**Purpose**: Runs OLS linear regression `Return = α + β × Surprise + ε` for each asset/window pair.
+
+##### The Model
+
+For each asset/window combination, we regress the asset's return against the CPI surprise:
+- **β > 0**: Asset rises when CPI surprises to the upside (hot inflation)
+- **β < 0**: Asset falls when CPI surprises to the upside
+- **R²**: Goodness of fit — how much of the return variance is explained by surprise
+- **t-statistic**: Statistical significance of β (|t| > 1.96 → significant at 5%)
+
+##### OLS Formulas (from scratch, no external deps)
+
+```
+β = Σ((xi - x̄)(yi - ȳ)) / Σ((xi - x̄)²)
+α = ȳ - β × x̄
+R² = 1 - SS_res / SS_tot
+SE(β) = sqrt(SS_res / ((n-2) × Σ(xi - x̄)²))
+t = β / SE(β)
+```
+
+**Why from scratch?** This keeps the project dependency-free (only `godotenv` as an external dep). The OLS math is only ~50 lines of code.
+
+##### Key Functions
+
+- `ComputeSensitivity(matrix)` → Runs regression for all asset/window pairs (≥3 observations required)
+- `SensitivitySummary(results)` → Formatted table with α, β, R², N, SE(β), t-stat, and significance stars
+
+---
+
+#### [leadlag.go](file:///Users/srijansarkar/Documents/MacroEventImpactTracker/internal/analytics/leadlag.go) `[NEW in Phase 3]`
+
+**Purpose**: Cross-correlation analysis between asset return series at different time lags.
+
+##### The Question
+
+Does one asset reliably react *before* another around CPI releases? For example:
+- Does VIX spike 1 minute before SPY drops?
+- Does EUR/USD move before the DXY proxy?
+
+##### Method
+
+```mermaid
+flowchart TD
+    A["For each CPI event"] --> B["Extract 30min post-event window"]
+    B --> C["Compute minute-by-minute returns"]
+    C --> D["For lag = -5 to +5 minutes"]
+    D --> E["Shift Asset A by lag"]
+    E --> F["Compute Pearson correlation"]
+    F --> G["Average across all events"]
+    G --> H["Peak lag = which asset leads"]
+```
+
+1. For each event, extract minute-level close prices for both assets
+2. Compute minute-by-minute returns
+3. Align series by timestamp, applying a lag offset
+4. Compute Pearson correlation at each lag (-5 to +5 minutes)
+5. Average correlations across all events
+
+**Positive peak lag**: Asset A leads Asset B by that many minutes.
+**Negative peak lag**: Asset B leads Asset A.
+
+##### Key Functions
+
+- `ComputeLeadLag(store, events, assetA, assetB, maxLagMinutes)` → Cross-correlations for one pair
+- `ComputeAllLeadLag(store, events, assets, maxLagMinutes)` → All unique pairs
+- `pearsonCorrelation(x, y)` → Pure Go Pearson coefficient
+- `LeadLagSummary(results)` → Visual bar chart of correlations
 
 ---
 
@@ -373,11 +525,20 @@ TWELVE_DATA_API_KEY = your_twelve_data_key
 - Skipping bad rows without failing the whole request
 - Zero volume for forex pairs
 
-**Total: 28 tests, all passing.**
+#### [analytics_test.go](file:///Users/srijansarkar/Documents/MacroEventImpactTracker/internal/analytics/analytics_test.go) — Phase 3
+
+32 tests covering:
+- **Event Windows** (6): `DefaultWindows` correctness, basic extraction, open/close prices, empty store, no events, string representation
+- **Return Computation** (6): basic computation, known values (10% return), zero open price guard, filtering, summary formatting, empty matrix
+- **Sensitivity Model** (8): `CalculateReturn` correctness, OLS with perfect linear data (β=3.0, R²=1.0), negative slope, noisy data (R²>0.9), zero variance, manual data with negative β for SPY, summary formatting
+- **Lead/Lag** (9): Pearson correlation (perfect +1.0, perfect -1.0, uncorrelated ≈0, constant series, too short, unequal length), lead/lag computation, missing asset handling, all pairs, summary formatting
+- **Integration** (3): full pipeline, mean helper, minute return computation
+
+**Total: 60 tests, all passing.**
 
 ---
 
-## Data Flow — How Phase 1 + Phase 2 Work Together
+## Data Flow — How Phase 1 + Phase 2 + Phase 3 Work Together
 
 ```mermaid
 flowchart TD
@@ -401,10 +562,14 @@ flowchart TD
         K --> M["Filled Store:\n6 assets × N events"]
     end
 
-    subgraph "Phase 3: Analytics (TODO)"
-        M --> N[Event Window Extraction]
-        N --> O[Return Computation]
-        O --> P[Surprise Sensitivity Model]
+    subgraph "Phase 3: Analytics Engine ✅"
+        M --> N["ExtractEventWindows()\npre_30m, post_30m, post_2h, post_1d"]
+        F --> N
+        N --> O["ComputeReturns()\n[event × asset × window] matrix"]
+        O --> P["ComputeSensitivity()\nReturn = α + β × Surprise + ε"]
+        O --> Q["ComputeAllLeadLag()\nPearson cross-correlations"]
+        P --> R["SensitivitySummary()\nβ, R², t-stat per asset"]
+        Q --> S["LeadLagSummary()\nWhich asset reacts first?"]
     end
 ```
 
@@ -448,12 +613,13 @@ flowchart TD
 
 ---
 
-### Phase 3: Analytics Engine ⏱️ ~3-4 days
+### Phase 3: Analytics Engine ✅ Done
 
-- [ ] **Event Window Extraction** — For each `MacroEvent`, slice the market time-series into windows: `[-30min, 0]`, `[0, +30min]`, `[0, +2h]`, `[0, +1d]`.
-- [ ] **Return Computation** — Use `CalculateReturn()` across all windows and assets. Build a return matrix: `[event × asset × window]`.
-- [ ] **Surprise Sensitivity Model** — Simple linear regression: `Return = α + β × Surprise + ε`. Compute β for each asset to quantify sensitivity.
-- [ ] **Cross-Asset Lead/Lag Analysis** — Calculate cross-correlations between asset returns at different lag offsets (e.g., does VIX spike 1 min before SPY drops?).
+- [x] **Event Window Extraction** — Slices market time-series into 4 windows per event: `[-30min, 0]`, `[0, +30min]`, `[0, +2h]`, `[0, +1d]`
+- [x] **Return Computation** — Uses `CalculateReturn()` across all windows and assets. Builds a 3D return matrix: `[event × asset × window]`
+- [x] **Surprise Sensitivity Model** — OLS regression `Return = α + β × Surprise + ε` from scratch. Computes β, R², SE(β), t-statistic per asset/window
+- [x] **Cross-Asset Lead/Lag Analysis** — Pearson cross-correlations between asset return series at lag offsets -5 to +5 minutes. Identifies which assets react first
+- [x] **32 new unit tests** — all passing (60 total across project)
 
 ---
 
