@@ -33,7 +33,8 @@ type AssetConfig struct {
 // Asset list:
 //   - SPY       → S&P 500 ETF (broad equity market)
 //   - EUR/USD   → Euro/Dollar forex pair (currency markets)
-//   - VIX       → CBOE Volatility Index (fear gauge)
+//   - VIXY      → ProShares VIX Short-Term Futures ETF (fear gauge proxy)
+//                  (VIX index itself is not available on Twelve Data free tier)
 //   - DGS2      → 2-Year Treasury yield (short-term rates)
 //   - DGS10     → 10-Year Treasury yield (long-term rates)
 //   - DXY       → US Dollar Index (computed from EUR/USD, not fetched)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"macro-impact-tracker/internal/models"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -75,21 +76,36 @@ func fetchFromTwelveData(symbol, interval, startDate, endDate string) (*models.A
 		return nil, fmt.Errorf("TWELVE_DATA_API_KEY environment variable is not set")
 	}
 
-	// Build the request URL
-	// outputsize=5000 requests the maximum number of data points
-	url := fmt.Sprintf(
-		"%s?symbol=%s&interval=%s&start_date=%s&end_date=%s&outputsize=5000&apikey=%s",
-		twelveDataBaseURL, symbol, interval, startDate, endDate, apiKey,
+	// Build the request URL using proper URL encoding.
+	// - url.QueryEscape handles symbols with special characters (e.g., EUR/USD → EUR%2FUSD)
+	// - timezone=UTC ensures the API interprets our start_date/end_date as UTC
+	//   (without this, the API defaults to exchange timezone, e.g., America/New_York for SPY)
+	// - outputsize=5000 requests the maximum number of data points
+	// - order=asc returns data chronologically (oldest first)
+	requestURL := fmt.Sprintf(
+		"%s?symbol=%s&interval=%s&start_date=%s&end_date=%s&outputsize=5000&timezone=UTC&order=asc&format=JSON&apikey=%s",
+		twelveDataBaseURL,
+		url.QueryEscape(symbol),
+		url.QueryEscape(interval),
+		url.QueryEscape(startDate),
+		url.QueryEscape(endDate),
+		apiKey,
 	)
 
 	// Make the HTTP GET request
-	resp, err := http.Get(url)
+	resp, err := http.Get(requestURL)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed for %s: %w", symbol, err)
 	}
 	defer resp.Body.Close()
 
-	// Read entire body (needed because we may want to log it on error)
+	// Check HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d for %s: %s", resp.StatusCode, symbol, string(body))
+	}
+
+	// Read entire body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body for %s: %w", symbol, err)
@@ -98,12 +114,21 @@ func fetchFromTwelveData(symbol, interval, startDate, endDate string) (*models.A
 	// Parse the JSON response
 	var data TwelveDataResponse
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON for %s: %w", symbol, err)
+		// Log a snippet of the raw body for debugging
+		snippet := string(body)
+		if len(snippet) > 200 {
+			snippet = snippet[:200] + "..."
+		}
+		return nil, fmt.Errorf("failed to parse JSON for %s: %w\n  Raw response: %s", symbol, err, snippet)
 	}
 
 	// Check for API-level errors
 	if data.Status == "error" {
 		return nil, fmt.Errorf("Twelve Data API error for %s: [%d] %s", symbol, data.Code, data.Message)
+	}
+
+	if len(data.Values) == 0 {
+		return nil, fmt.Errorf("Twelve Data returned 0 data points for %s (status: %s)", symbol, data.Status)
 	}
 
 	// Convert the raw JSON values into MarketDataPoint structs
@@ -118,7 +143,7 @@ func fetchFromTwelveData(symbol, interval, startDate, endDate string) (*models.A
 		Interval:   interval,
 		DataPoints: points,
 	}
-	ts.SortByTime() // Twelve Data returns newest-first, we want oldest-first
+	ts.SortByTime() // Ensure oldest-first ordering
 
 	return ts, nil
 }
@@ -131,19 +156,15 @@ func parseTwelveDataValues(values []TwelveDataValue, interval string) ([]models.
 		return nil, fmt.Errorf("no data points returned")
 	}
 
-	// Determine the datetime layout based on the interval
-	// Intraday intervals include time, daily intervals don't
-	layout := "2006-01-02 15:04:05"
-	if interval == "1day" || interval == "1week" || interval == "1month" {
-		layout = "2006-01-02"
-	}
-
 	var points []models.MarketDataPoint
 	var parseErrors int
 
 	for _, v := range values {
-		// Parse the timestamp
-		ts, err := time.Parse(layout, v.Datetime)
+		// Parse the timestamp with flexible format detection.
+		// Twelve Data returns different formats depending on interval:
+		//   Intraday: "2026-01-14 09:30:00" (with or without seconds)
+		//   Daily:    "2026-01-14"
+		ts, err := parseFlexibleDatetime(v.Datetime, interval)
 		if err != nil {
 			parseErrors++
 			continue
@@ -172,7 +193,7 @@ func parseTwelveDataValues(values []TwelveDataValue, interval string) ([]models.
 		}
 		vol, err := strconv.ParseInt(v.Volume, 10, 64)
 		if err != nil {
-			vol = 0 // Volume is not critical, default to 0 for forex
+			vol = 0 // Volume is not critical, default to 0 for forex/indices
 		}
 
 		points = append(points, models.MarketDataPoint{
@@ -190,4 +211,35 @@ func parseTwelveDataValues(values []TwelveDataValue, interval string) ([]models.
 	}
 
 	return points, nil
+}
+
+// parseFlexibleDatetime tries multiple datetime formats returned by Twelve Data.
+// The API can return:
+//   - "2026-01-14 09:30:00" (intraday with seconds)
+//   - "2026-01-14 09:30"    (intraday without seconds — some responses)
+//   - "2026-01-14"          (daily/weekly/monthly)
+func parseFlexibleDatetime(datetime, interval string) (time.Time, error) {
+	// For daily/weekly/monthly intervals, only try date format
+	if interval == "1day" || interval == "1week" || interval == "1month" {
+		return time.Parse("2006-01-02", datetime)
+	}
+
+	// For intraday, try multiple formats in order of likelihood
+	layouts := []string{
+		"2006-01-02 15:04:05", // Full datetime with seconds
+		"2006-01-02 15:04",    // Datetime without seconds
+		"2006-01-02T15:04:05", // ISO format variant
+		"2006-01-02",          // Fallback to date only
+	}
+
+	var lastErr error
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, datetime); err == nil {
+			return t, nil
+		} else {
+			lastErr = err
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("could not parse datetime %q: %w", datetime, lastErr)
 }
